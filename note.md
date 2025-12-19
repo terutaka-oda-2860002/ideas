@@ -28,6 +28,98 @@ MCP活用した支援や「仕様書ベース開発」は、AI以前のワーク
 フル機能のクラウドPCで、チームやエンタープライズのルールを強制できる。
 #### DevBox
 DeBoxはWindows 365に吸収予定。
- 
-### azure devtest labsを使う
-すくなくとも
+
+## ワークフロー全体像
+ADEは、プロジェクトや環境タイプ（dev/test 等）ごとにテンプレートからリソースを一括作成し、タグ/RBAC/ポリシーでガバナンスを利かせます。
+DevTest Labsは、開発者がセルフサービスでVM を迅速に払い出しできる仕組み。コスト制御（自動停止、サイズ制限）やアーティファクトで初期構成自動化。
+Shared Image Galleryでベース/カスタムイメージを共有し、ADE の VM/Scale SetやDevTest Labs の VMで共用できます。
+**監視/ログ（Log Analytics/Azure Monitor）とセキュリティ（Key Vault, Policy）**は共通化して、プロジェクト横断の標準運用に寄せます。
+
+```mermaid
+flowchart TB
+    %% 人・コード・環境の関係を上から下へ
+    subgraph People["開発チーム／QAチーム／チームリーダー"]
+        Devs(開発者)
+        QA(QA/テスター)
+        TL(チームリーダー)
+    end
+
+    subgraph SourceCtrl["ソース管理 & カタログ"]
+        GH["GitHub / Azure Repos- アプリコード - IaC(Bicep/ARM)- ADEカタログ(テンプレート)"]
+        ArtifactsRepo["Artifacts リポジトリ- DevTest Labs用アーティファクト(スクリプト/ツール)"]
+    end
+
+    subgraph CI["CI/CD"]
+        Actions["GitHub Actions / Azure Pipelines- ビルド/テスト/デプロイ"]
+        SIG["Shared Image Gallery- ベース/カスタムイメージ格納"]
+    end
+
+    subgraph AzureEnv["Azure サブスクリプション（開発・検証）"]
+        subgraph ADE["Azure Deployment Environments (ADE)"]
+            Catalog["環境テンプレート(Bicep/ARM)- envType: dev/test/staging- RBAC/タグ/ポリシー"]
+            ADEDeploy["環境作成/削除の自動化- プロジェクト/チーム単位"]
+        end
+
+        subgraph DTL["Azure DevTest Labs"]
+            Lab["Lab(ラボ)設定- コスト上限/自動停止/許可サイズ"]
+            Formulas["Formulas(定義済みVMレシピ)"]
+            CustomImages["Custom Images"]
+            DTLVM["Dev/Test VM群"]
+        end
+
+        subgraph Common["共通基盤/運用"]
+            VNet["VNet & Subnets"]
+            Bastion["Azure Bastion"]
+            KV[Azure Key Vault]
+            SA["Storage Account(Artifacts/ログ/一時ファイル)"]
+            LA["Log Analytics / Azure Monitor(監視/メトリック/ログ)"]
+            Policy["Azure Policy(タグ/セキュリティ/コスト管理)"]
+        end
+    end
+
+    %% 関係線
+    Devs --> GH
+    QA --> GH
+    TL --> GH
+
+    GH --> Actions
+    Actions --> ADEDeploy
+    Actions --> SIG
+    Actions --> DTLVM
+
+    Catalog --- GH
+    ADEDeploy --> VNet
+    ADEDeploy --> SA
+    ADEDeploy --> KV
+    ADEDeploy --> Policy
+
+    Lab --- SIG
+    Lab --- ArtifactsRepo
+    Formulas --> DTLVM
+    CustomImages --> DTLVM
+    DTLVM --> VNet
+    DTLVM --> Bastion
+    DTLVM --> LA
+    DTLVM --> KV
+
+    %% 運用まわり
+    Policy --> DTLVM
+    Policy --> ADEDeploy
+    LA --> TL
+    LA --> Devs
+
+```
+
+Private Endpointで Storage/Key Vault へのアクセスを VNet 内に閉じ、NSG/UDR で東西/南北トラフィックを制御。
+Bastionを使うことで、RDP/SSH を公開せず安全に VM へアクセス。
+Azure Policyでサブスクリプション横断のタグ付与、許可リージョン/SKU、不要な公開 IP 禁止などを一括適用。
+Log Analytics/Azure Monitorで VM/サービスのメトリック・ログを収集し、アラート/ダッシュボードを標準化。
+
+
+ガバナンス統一：ADE テンプレートに「タグ（CostCenter/Owner/Project）」「RBAC ロール」「ポリシー割り当て」を組み込み、環境作成＝標準適用の形にします。
+コスト最適化：DevTest Labs のスケジュール自動停止と許可 VM サイズで無駄を抑制。ADE でも Auto-shutdown をリソースに適用。
+初期構成自動化：Artifacts を使い、VM 作成時にエージェント導入（Monitor/Defender）やツール配布を自動化。
+イメージ戦略：Shared Image Gallery にOS パッチ済み・ミドルウェア同梱イメージを置き、ADE/DTL のどちらからも参照。
+ネットワーク分離：App/Subnet と DTL/Subnet を分離し、NSG と UDR でテスト用 VM の影響がアプリ側に波及しないように。
+
+
