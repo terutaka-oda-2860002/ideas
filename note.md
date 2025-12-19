@@ -115,6 +115,81 @@ Bastionを使うことで、RDP/SSH を公開せず安全に VM へアクセス�
 Azure Policyでサブスクリプション横断のタグ付与、許可リージョン/SKU、不要な公開 IP 禁止などを一括適用。
 Log Analytics/Azure Monitorで VM/サービスのメトリック・ログを収集し、アラート/ダッシュボードを標準化。
 
+```mermaid
+
+flowchart LR
+    subgraph Perimeter["境界/アクセス(japaneastなど)"]
+        Internet[(Internet)]
+        WAF["App Gateway (WAF/SSL終端)"]
+        Bastion[Azure Bastion]
+    end
+
+    Internet --> WAF
+    Internet --> Bastion
+
+    subgraph VNet["VNet（開発・検証用）"]
+        subgraph Subnets["サブネット"]
+            snApp["App/Subnet<br/>- ADEデプロイのPaaS/VM"]
+            snDTL["DevTestLabs/Subnet<br/>- DTL VM群"]
+            snSvc["Services/Subnet<br/>- Key Vault/Storage PE/Monitor"]
+            snJump["Jump/Subnet<br/>- 管理/踏み台(必要時)"]
+        end
+        NSGApp["NSG(App)"]
+        NSGDTL["NSG(DTL)"]
+        NSGSvc["NSG(Services)"]
+        UDR["ユーザ定義ルート(必要時)"]
+    end
+
+    WAF --> snApp
+    Bastion --> snDTL
+    Bastion --> snJump
+
+    %% サービス連携
+    subgraph Services["共通サービス"]
+        KV[(Key Vault)]
+        SA[(Storage Account)]
+        LA["(Log Analytics/Monitor)"]
+        SIG["(Shared Image Gallery)"]
+        Policy["(Azure Policy)"]
+    end
+
+    %% Private Endpoints
+    SA ---|Private Endpoint| snSvc
+    KV ---|Private Endpoint| snSvc
+
+    %% 相互接続
+    snApp --> NSGApp
+    snDTL --> NSGDTL
+    snSvc --> NSGSvc
+    NSGApp --> UDR
+    NSGDTL --> UDR
+    NSGSvc --> UDR
+
+    %% デプロイ主体
+    subgraph ADE["Azure Deployment Environments"]
+        ADETpl["ADEテンプレート(Bicep/ARM)"]
+        ADEOps["環境作成/破棄/タグ/RBAC"]
+    end
+    ADETpl --> ADEOps
+    ADEOps --> snApp
+    ADEOps --> snSvc
+    ADEOps --> Policy
+    ADEOps --> LA
+
+    subgraph DTL["Azure DevTest Labs"]
+        Lab["Lab設定(コスト上限/自動停止)"]
+        Formulas["Formula/Artifacts"]
+        DTLVMs[DTL VM群]
+    end
+    Lab --> DTLVMs
+    Formulas --> DTLVMs
+    DTLVMs --> snDTL
+    DTLVMs --> LA
+    DTLVMs --> KV
+
+    SIG --> ADEOps
+
+```
 
 ガバナンス統一：ADE テンプレートに「タグ（CostCenter/Owner/Project）」「RBAC ロール」「ポリシー割り当て」を組み込み、環境作成＝標準適用の形にします。
 コスト最適化：DevTest Labs のスケジュール自動停止と許可 VM サイズで無駄を抑制。ADE でも Auto-shutdown をリソースに適用。
